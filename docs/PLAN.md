@@ -243,6 +243,24 @@ and holds no Anthropic key. First run on a normal machine should do, in order:
 4. Buy a $5 pack with a Stripe test card; the webhook should flip the purchase to `paid` and add the ledger row.
 5. Spend the balance down to confirm the 402 path and the mid-turn stop.
 
+## 8b. Testing phase changes (2026-10-29)
+
+- **Free testing.** `BILLING_ENABLED` (default `false`) turns charging off: no balance check, no debit,
+  checkout disabled, UI shows "Free testing". Usage is still metered: `agent_calls` rows as before, and each
+  request writes a zero-amount `usage` ledger row whose note carries what it would have cost. Turning billing
+  on is only the env change plus Stripe.
+- **Resumable turns.** Hosts like Netlify stop a function after a fixed time. `runTurn` now stops starting
+  new model calls once `AGENT_REQUEST_BUDGET_MS` (35 s) has passed and ends the stream with
+  `needsContinue: true`; the browser posts `{ continue: true }` and the loop resumes from the stored messages
+  (up to 6 follow-ups per message, `AGENT_MAX_CALLS` still caps model calls per message). The assistant row
+  and its tool results are inserted together, so a killed request never leaves an unanswered `tool_use`.
+  A conversation whose last row is not an assistant reply has an unfinished turn; the page shows Continue.
+  The conversation lock is treated as abandoned after budget + 90 s.
+- **Origin.** Email and Checkout links use `NEXT_PUBLIC_SITE_URL`, else Netlify's `URL`, else the request host.
+- **Netlify.** `netlify.toml` at the repo root (base `web`, `pnpm build`, Node 22). If turns are cut off too
+  often on Netlify, the next step is to run the agent loop in a Netlify Background Function (15 min) that
+  writes events to a table the browser reads; the stored-message design already supports it.
+
 ## 9. Setup the owner must do (cannot be done from this environment)
 
 1. **Anthropic key** → `ANTHROPIC_API_KEY`.
@@ -252,8 +270,8 @@ and holds no Anthropic key. First run on a normal machine should do, in order:
    confirmations on. Optional: customise the magic-link template.
 4. **Stripe**: create the account, set `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and point a webhook
    at `/api/stripe/webhook` for `checkout.session.completed`. Test with `stripe listen --forward-to`.
-5. **Deploy** (Vercel recommended): set the env vars; the chat route declares `maxDuration = 300`.
-   Long turns stream, so the client sees progress within a second.
+5. **Deploy** on Netlify per the README (`netlify.toml` is in the repo). Long turns stream and continue
+   across requests, so the client sees progress within a second.
 
 ## 10. Later (not in this build)
 

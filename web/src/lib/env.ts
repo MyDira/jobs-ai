@@ -8,7 +8,15 @@ export const env = {
   supabaseUrl: () => req("NEXT_PUBLIC_SUPABASE_URL"),
   supabasePublishableKey: () => req("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY"),
   supabaseServiceRoleKey: () => req("SUPABASE_SERVICE_ROLE_KEY"),
-  siteUrl: () => process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000",
+  /** Optional fixed public origin. When unset, the origin is derived from the request (see lib/origin.ts). */
+  siteUrlOverride: () => process.env.NEXT_PUBLIC_SITE_URL || process.env.URL || "",
+  /**
+   * When false (the default while testing), nobody is charged: no balance checks, no debits, checkout off.
+   * Usage is still metered and recorded so you can see what it would have cost.
+   */
+  billingEnabled: () => (process.env.BILLING_ENABLED ?? "false").toLowerCase() === "true",
+  /** Stop starting new model calls in one HTTP request after this long; the client then continues the turn. */
+  requestBudgetMs: () => Number(process.env.AGENT_REQUEST_BUDGET_MS ?? 35_000),
   agentModel: () => process.env.AGENT_MODEL ?? "claude-opus-5-5",
   agentEffort: (): "low" | "medium" | "high" | "xhigh" | "max" => {
     const e = process.env.AGENT_EFFORT ?? "medium";

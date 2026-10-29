@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getBalance } from "@/lib/credits";
 import { env } from "@/lib/env";
 import { Chat, type Turn } from "@/components/Chat";
-import type { StoredMessage, AssistantUi } from "@/lib/agent/run";
+import { hasPendingTurn, type StoredMessage, type AssistantUi } from "@/lib/agent/run";
 import { loadCurrentResume } from "@/lib/agent/context";
 
 export const dynamic = "force-dynamic";
@@ -45,12 +45,15 @@ export default async function ConversationPage({ params }: { params: Promise<{ i
     loadCurrentResume(supabase, user.id),
   ]);
 
+  const stored = (rows as StoredMessage[]) ?? [];
   return (
     <Chat
       conversationId={convo.id}
       title={convo.title}
       mode={convo.mode as "chat" | "interview"}
-      initialTurns={rowsToTurns((rows as StoredMessage[]) ?? [])}
+      initialTurns={rowsToTurns(stored)}
+      pendingTurn={hasPendingTurn(stored)}
+      billingEnabled={env.billingEnabled()}
       initialBalanceMicros={balance}
       reserveMicros={env.turnReserveMicros()}
       hasResume={Boolean(resume)}

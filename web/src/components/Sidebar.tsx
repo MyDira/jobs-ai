@@ -8,11 +8,21 @@ import { formatMicros } from "@/lib/credits";
 
 type Convo = { id: string; title: string; mode: string; updated_at: string };
 
-export function Sidebar({ conversations, balanceMicros, email }: { conversations: Convo[]; balanceMicros: number; email: string }) {
+export function Sidebar({
+  conversations,
+  balanceMicros,
+  email,
+  billingEnabled,
+}: {
+  conversations: Convo[];
+  balanceMicros: number;
+  email: string;
+  billingEnabled: boolean;
+}) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [pending, start] = useTransition();
-  const low = balanceMicros < 1_000_000;
+  const low = billingEnabled && balanceMicros < 1_000_000;
 
   const nav = (
     <>
@@ -49,8 +59,12 @@ export function Sidebar({ conversations, balanceMicros, email }: { conversations
       </nav>
       <div className="border-t border-line px-3 py-3 text-sm">
         <Link href="/app/credits" className={`flex items-center justify-between rounded-md px-2 py-1.5 hover:bg-soft ${pathname === "/app/credits" ? "bg-soft" : ""}`}>
-          <span>Credits</span>
-          <span className={`font-mono ${low ? "text-red-600" : ""}`}>{formatMicros(balanceMicros)}</span>
+          <span>{billingEnabled ? "Credits" : "Usage"}</span>
+          {billingEnabled ? (
+            <span className={`font-mono ${low ? "text-red-600" : ""}`}>{formatMicros(balanceMicros)}</span>
+          ) : (
+            <span className="rounded-full bg-accent/15 px-2 py-0.5 text-xs text-accent">Free testing</span>
+          )}
         </Link>
         <Link href="/app/profile" className={`block rounded-md px-2 py-1.5 hover:bg-soft ${pathname === "/app/profile" ? "bg-soft" : ""}`}>Profile &amp; resume</Link>
         <form action="/auth/signout" method="post" className="mt-1 flex items-center justify-between px-2 py-1.5 text-xs text-muted">

@@ -46,14 +46,18 @@ export function Chat(props: {
   initialBalanceMicros: number;
   reserveMicros: number;
   hasResume: boolean;
+  pendingTurn: boolean;
+  billingEnabled: boolean;
 }) {
+  const billing = props.billingEnabled;
   const router = useRouter();
   const [turns, setTurns] = useState<Turn[]>(props.initialTurns);
   const [balance, setBalance] = useState(props.initialBalanceMicros);
   const [mode, setMode] = useState(props.mode);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
-  const [outOfCredits, setOutOfCredits] = useState(props.initialBalanceMicros < props.reserveMicros);
+  const [outOfCredits, setOutOfCredits] = useState(billing && props.initialBalanceMicros < props.reserveMicros);
+  const [pending, setPending] = useState(props.pendingTurn);
   const [modePending, startMode] = useTransition();
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -62,7 +66,8 @@ export function Chat(props: {
     setTurns(props.initialTurns);
     setMode(props.mode);
     setBalance(props.initialBalanceMicros);
-  }, [props.conversationId, props.initialTurns, props.mode, props.initialBalanceMicros]);
+    setPending(props.pendingTurn);
+  }, [props.conversationId, props.initialTurns, props.mode, props.initialBalanceMicros, props.pendingTurn]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
@@ -78,10 +83,11 @@ export function Chat(props: {
     });
   }
 
-  function handleEvent(e: AgentEvent) {
+  /** Returns true when the server says the turn needs another request. */
+  function handleEvent(e: AgentEvent): boolean {
     switch (e.type) {
       case "meta":
-        patchLast((t) => { t.id = e.userMessageId; });
+        patchLast((t) => { if (e.userMessageId) t.id = e.userMessageId; });
         break;
       case "segment":
         patchLast((t) => { t.segments.push({ text: "", thinking: "", tools: [], tiers: [] }); });
@@ -107,68 +113,105 @@ export function Chat(props: {
         break;
       case "call_usage":
         setBalance(e.balanceMicros);
-        patchLast((t) => { t.costMicros = e.turnCostMicros; });
         break;
       case "error":
         patchLast((t) => { t.error = t.error ? `${t.error} ${e.message}` : e.message; });
         break;
       case "done":
         setBalance(e.balanceMicros);
-        patchLast((t) => { t.costMicros = e.turnCostMicros; t.status = t.error ? "error" : "done"; t.exhausted = e.exhausted; });
-        if (e.exhausted || e.balanceMicros < props.reserveMicros) setOutOfCredits(true);
-        break;
+        patchLast((t) => { t.costMicros += e.turnCostMicros; t.exhausted = e.exhausted; });
+        if (billing && (e.exhausted || e.balanceMicros < props.reserveMicros)) setOutOfCredits(true);
+        return e.needsContinue;
+    }
+    return false;
+  }
+
+  /** One HTTP request. Resolves "continue" when the server asks for another request, "done", or "failed". */
+  async function request(body: Record<string, unknown>): Promise<"continue" | "done" | "failed"> {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationId: props.conversationId, ...body }),
+    });
+    if (res.status === 402) {
+      const data = await res.json().catch(() => ({}));
+      if (typeof data.balanceMicros === "number") setBalance(data.balanceMicros);
+      setOutOfCredits(true);
+      patchLast((t) => { t.error = "You are out of credits. Add a pack to continue."; });
+      return "failed";
+    }
+    if (!res.ok || !res.body) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error ?? `Request failed (${res.status})`);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let sawDone = false;
+    let wantsMore = false;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const chunk = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        for (const line of chunk.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          let ev: AgentEvent;
+          try { ev = JSON.parse(line.slice(6)) as AgentEvent; } catch { continue; }
+          if (ev.type === "done") sawDone = true;
+          if (handleEvent(ev)) wantsMore = true;
+        }
+      }
+    }
+    if (!sawDone) {
+      // The server stopped mid-request (host time limit or a crash). The work so far is saved.
+      patchLast((t) => { t.error = "The server stopped before this answer finished. Press Continue to pick up where it left off."; });
+      return "failed";
+    }
+    return wantsMore ? "continue" : "done";
+  }
+
+  /** Runs a turn to the end, issuing follow-up requests while the server asks for them. */
+  async function drive(first: Record<string, unknown>) {
+    setSending(true);
+    setPending(false);
+    let outcome: "continue" | "done" | "failed" = "failed";
+    try {
+      outcome = await request(first);
+      for (let i = 0; outcome === "continue" && i < 6; i++) outcome = await request({ continue: true });
+    } catch (e) {
+      patchLast((t) => { t.error = (e as Error).message; });
+      outcome = "failed";
+    } finally {
+      setSending(false);
+      setPending(outcome !== "done");
+      setTurns((prev) => prev.map((t, i) => (i === prev.length - 1 && t.status === "streaming" ? { ...t, status: t.error ? "error" : "done" } : t)));
+      router.refresh(); // sidebar title + balance
+      textareaRef.current?.focus();
     }
   }
 
   async function send(text: string) {
     const trimmed = text.trim();
     if (!trimmed || sending) return;
-    if (balance < props.reserveMicros) { setOutOfCredits(true); return; }
+    if (billing && balance < props.reserveMicros) { setOutOfCredits(true); return; }
     setInput("");
-    setSending(true);
     setTurns((prev) => [...prev, { id: `tmp-${Date.now()}`, user: trimmed, segments: [], costMicros: 0, status: "streaming" }]);
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId: props.conversationId, text: trimmed }),
-      });
-      if (res.status === 402) {
-        const data = await res.json().catch(() => ({}));
-        if (typeof data.balanceMicros === "number") setBalance(data.balanceMicros);
-        setOutOfCredits(true);
-        patchLast((t) => { t.status = "error"; t.error = "You are out of credits. Add a pack to continue."; });
-        return;
-      }
-      if (!res.ok || !res.body) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error ?? `Request failed (${res.status})`);
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let idx: number;
-        while ((idx = buf.indexOf("\n\n")) >= 0) {
-          const chunk = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          for (const line of chunk.split("\n")) {
-            if (!line.startsWith("data: ")) continue;
-            try { handleEvent(JSON.parse(line.slice(6)) as AgentEvent); } catch { /* ignore malformed */ }
-          }
-        }
-      }
-    } catch (e) {
-      patchLast((t) => { t.status = "error"; t.error = (e as Error).message; });
-    } finally {
-      setSending(false);
-      setTurns((prev) => prev.map((t, i) => (i === prev.length - 1 && t.status === "streaming" ? { ...t, status: "done" } : t)));
-      router.refresh(); // sidebar title + balance
-      textareaRef.current?.focus();
-    }
+    await drive({ text: trimmed });
+  }
+
+  async function continueTurn() {
+    if (sending) return;
+    setTurns((prev) => {
+      if (prev.length === 0) return prev;
+      const next = prev.slice();
+      next[next.length - 1] = { ...next[next.length - 1], status: "streaming", error: undefined };
+      return next;
+    });
+    await drive({ continue: true });
   }
 
   function toggleMode() {
@@ -197,9 +240,15 @@ export function Chat(props: {
               <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition ${mode === "interview" ? "left-4.5 translate-x-0.5" : "left-0.5"}`} />
             </button>
           </label>
-          <Link href="/app/credits" className={`rounded-full border border-line px-2 py-0.5 font-mono ${balance < 1_000_000 ? "text-red-600" : ""}`} title="Your credit balance">
-            {formatMicros(balance)}
-          </Link>
+          {billing ? (
+            <Link href="/app/credits" className={`rounded-full border border-line px-2 py-0.5 font-mono ${balance < 1_000_000 ? "text-red-600" : ""}`} title="Your credit balance">
+              {formatMicros(balance)}
+            </Link>
+          ) : (
+            <Link href="/app/credits" className="rounded-full bg-accent/15 px-2 py-0.5 text-accent" title="Usage is free while the app is being tested">
+              Free testing
+            </Link>
+          )}
         </div>
       </header>
 
@@ -254,11 +303,19 @@ export function Chat(props: {
                 {t.error && <p className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/40 dark:text-red-300">{t.error}</p>}
                 {t.exhausted && <p className="text-xs text-amber-700 dark:text-amber-400">Credits ran out during this answer, so it stopped early.</p>}
                 {t.status !== "streaming" && t.costMicros > 0 && (
-                  <p className="text-right font-mono text-[11px] text-muted" title="What this answer cost">{formatMicros(t.costMicros, 4)}</p>
+                  <p className="text-right font-mono text-[11px] text-muted" title={billing ? "What this answer cost" : "What this answer would cost; free during testing"}>
+                    {formatMicros(t.costMicros, 4)}{billing ? "" : " · free"}
+                  </p>
                 )}
               </div>
             </div>
           ))}
+          {pending && !sending && turns.length > 0 && (
+            <div className="mb-4 flex items-center justify-between gap-3 rounded-md border border-line bg-panel px-3 py-2 text-xs">
+              <span className="text-muted">This answer did not finish.</span>
+              <button onClick={() => void continueTurn()} className="rounded bg-accent px-2.5 py-1 font-medium text-accent-fg">Continue</button>
+            </div>
+          )}
           <div ref={bottomRef} />
         </div>
       </div>
@@ -287,7 +344,9 @@ export function Chat(props: {
             />
             <button disabled={sending || !input.trim() || outOfCredits} className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:opacity-50">Send</button>
           </form>
-          <p className="mt-1.5 text-[11px] text-muted">Listings come from this week&apos;s papers and job sites; always confirm details with the employer. Each reply shows its cost.</p>
+          <p className="mt-1.5 text-[11px] text-muted">
+            Listings come from this week&apos;s papers and job sites; always confirm details with the employer. {billing ? "Each reply shows its cost." : "Free while we test; each reply shows what it would cost."}
+          </p>
         </div>
       </div>
     </div>

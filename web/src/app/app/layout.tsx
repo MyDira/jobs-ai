@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getBalance } from "@/lib/credits";
 import { Sidebar } from "@/components/Sidebar";
+import { env } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +25,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar conversations={conversations ?? []} balanceMicros={balance} email={user.email ?? ""} />
+      <Sidebar conversations={conversations ?? []} balanceMicros={balance} email={user.email ?? ""} billingEnabled={env.billingEnabled()} />
       <div className="flex min-w-0 flex-1 flex-col">{children}</div>
     </div>
   );

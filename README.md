@@ -53,8 +53,37 @@ pnpm smoke       # exercises the agent's search tools against the live database 
 pnpm build
 ```
 
-## Deploy
+## Billing switch (free testing)
 
-Vercel (or any Node host). Set the same environment variables. The chat route streams and declares
-`maxDuration = 300`; on Vercel that needs a plan that allows it (Pro / Fluid compute). Point the Stripe
-webhook and the Supabase redirect URL at the production origin.
+`BILLING_ENABLED` is `false` by default. In that mode anyone signed in can use the app without limit,
+nobody is charged and the Buy buttons are hidden. Every reply is still metered: the Usage page lists the
+tokens per turn and what it would have cost. Set `BILLING_ENABLED=true` (and configure Stripe) to start
+charging; nothing else changes.
+
+## Deploy on Netlify
+
+`netlify.toml` at the repo root already sets the base directory (`web`), the build command and Node 22.
+Netlify detects Next.js and applies its adapter automatically.
+
+1. Netlify → Add new site → Import from GitHub → `MyDira/jobs-ai`. Pick the branch to deploy
+   (`claude/gallant-noether-2q9tpa` until it is merged, then `main`). Leave the build settings as read from
+   `netlify.toml`.
+2. Site configuration → Environment variables. Required:
+   `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (values in `web/.env.example`),
+   `SUPABASE_SERVICE_ROLE_KEY`, `ANTHROPIC_API_KEY`. Optional: `BILLING_ENABLED` (default `false`),
+   `AGENT_EFFORT`, `AGENT_REQUEST_BUDGET_MS`. Leave `NEXT_PUBLIC_SITE_URL` empty; the site URL is detected.
+   The `NEXT_PUBLIC_` values are baked in at build time, so redeploy after changing them.
+3. Supabase → Authentication → URL Configuration: set Site URL to `https://<your-site>.netlify.app` and add
+   `https://<your-site>.netlify.app/auth/callback` to Redirect URLs (add
+   `https://*--<your-site>.netlify.app/**` if you want deploy previews to sign in too).
+4. Deploy, then sign up on the site.
+
+**Function time limit.** Netlify stops a server function after a fixed time (60 seconds on current plans
+per recent sources; older Netlify docs say 10, extendable to 26 on paid plans; check your plan). One chat
+answer can need several model calls, so the server stops starting new calls after
+`AGENT_REQUEST_BUDGET_MS` (35 s) and the browser continues the answer with a follow-up request
+automatically. If a request is still cut off, the work so far is saved and the chat shows a Continue
+button. If you see that often, set `AGENT_EFFORT=low` (faster calls) or lower the budget. Hosts without a
+short limit (Vercel Pro, Render, Railway, a VPS) can raise the budget to 240000.
+
+Stripe, when you turn billing on: point a webhook at `https://<your-site>.netlify.app/api/stripe/webhook`.

@@ -4,6 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 import { getStripe, stripeConfigured } from "@/lib/stripe";
 import { PACKS } from "@/lib/credits";
 import { env } from "@/lib/env";
+import { getOrigin } from "@/lib/origin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,6 +16,7 @@ export async function POST(req: Request) {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Not signed in" }, { status: 401 });
+  if (!env.billingEnabled()) return NextResponse.json({ error: "Payments are off while the app is in free testing." }, { status: 503 });
   if (!stripeConfigured()) return NextResponse.json({ error: "Payments are not configured yet (STRIPE_SECRET_KEY)." }, { status: 503 });
 
   const { cents } = (await req.json().catch(() => ({}))) as { cents?: number };
@@ -30,7 +32,7 @@ export async function POST(req: Request) {
     .single();
   if (error || !purchase) return NextResponse.json({ error: error?.message ?? "Could not start purchase" }, { status: 500 });
 
-  const site = env.siteUrl();
+  const site = await getOrigin();
   const session = await getStripe().checkout.sessions.create({
     mode: "payment",
     customer_email: user.email ?? undefined,

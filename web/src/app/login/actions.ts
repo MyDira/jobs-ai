@@ -2,7 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { env } from "@/lib/env";
+import { getOrigin } from "@/lib/origin";
 
 export type AuthState = { error?: string; message?: string } | null;
 
@@ -30,7 +30,7 @@ export async function signUp(_prev: AuthState, formData: FormData): Promise<Auth
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
-    options: { data: { name }, emailRedirectTo: `${env.siteUrl()}/auth/callback` },
+    options: { data: { name }, emailRedirectTo: `${await getOrigin()}/auth/callback` },
   });
   if (error) return { error: error.message };
   if (data.session) redirect("/app");
@@ -43,7 +43,7 @@ export async function sendMagicLink(_prev: AuthState, formData: FormData): Promi
   const supabase = await createClient();
   const { error } = await supabase.auth.signInWithOtp({
     email,
-    options: { emailRedirectTo: `${env.siteUrl()}/auth/callback?next=/app` },
+    options: { emailRedirectTo: `${await getOrigin()}/auth/callback?next=/app` },
   });
   if (error) return { error: error.message };
   return { message: "Magic link sent. Open it on this device to sign in." };

@@ -39,25 +39,33 @@ export default async function CreditsPage({ searchParams }: { searchParams: Prom
   const model = env.agentModel();
   const rates = effectiveRates(model);
   const markup = env.creditMarkup();
+  const billing = env.billingEnabled();
 
   return (
     <main className="mx-auto w-full max-w-3xl px-6 py-8">
-      <h1 className="text-2xl font-semibold tracking-tight">Credits</h1>
+      <h1 className="text-2xl font-semibold tracking-tight">{billing ? "Credits" : "Usage"}</h1>
+      {!billing && (
+        <p className="mt-3 rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-sm">
+          Free testing: usage is unlimited and nobody is charged. Every reply is still metered, so the history below shows the tokens used and what each turn would have cost at the rates listed.
+        </p>
+      )}
       {sp.status === "success" && (
         <p className="mt-3 rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-sm">Payment received. Credits appear as soon as Stripe confirms it, usually within a few seconds. Refresh if the balance has not updated.</p>
       )}
       {sp.status === "cancelled" && <p className="mt-3 rounded-md border border-line bg-soft px-3 py-2 text-sm">Checkout cancelled. Nothing was charged.</p>}
 
-      <section className="mt-6 flex flex-wrap items-end justify-between gap-4 rounded-lg border border-line bg-panel p-5">
-        <div>
-          <p className="text-sm text-muted">Balance</p>
-          <p className="text-3xl font-semibold">{formatMicros(balance)}</p>
-        </div>
-        <BuyCredits packs={[...PACKS]} configured={stripeConfigured()} />
-      </section>
+      {billing && (
+        <section className="mt-6 flex flex-wrap items-end justify-between gap-4 rounded-lg border border-line bg-panel p-5">
+          <div>
+            <p className="text-sm text-muted">Balance</p>
+            <p className="text-3xl font-semibold">{formatMicros(balance)}</p>
+          </div>
+          <BuyCredits packs={[...PACKS]} configured={stripeConfigured()} />
+        </section>
+      )}
 
       <section className="mt-6 rounded-lg border border-line bg-panel p-5 text-sm">
-        <h2 className="font-medium">How you are charged</h2>
+        <h2 className="font-medium">{billing ? "How you are charged" : "How you will be charged once billing is on"}</h2>
         <p className="mt-1 text-muted">
           Each reply is metered by the tokens the model reads and writes. The rates below are what you pay per million tokens on {model}
           ({markup}× Anthropic&apos;s list price, which covers card fees and running the service). Cached input is the part of the conversation the model already saw and re-reads at a discount.

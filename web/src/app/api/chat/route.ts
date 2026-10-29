@@ -6,11 +6,11 @@ import { runTurn, type AgentEvent } from "@/lib/agent/run";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+export const maxDuration = 300; // honoured on Vercel; Netlify has its own fixed limit (see AGENT_REQUEST_BUDGET_MS)
 
 /**
- * POST { conversationId, text } → text/event-stream of AgentEvent JSON objects.
- * The turn runs to completion server-side even if the client disconnects, so usage is always recorded.
+ * POST { conversationId, text } starts a turn; POST { conversationId, continue: true } resumes an
+ * unfinished one. Responds with text/event-stream of AgentEvent JSON objects.
  */
 export async function POST(req: Request) {
   const supabase = await createClient();
@@ -19,7 +19,7 @@ export async function POST(req: Request) {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Not signed in" }, { status: 401 });
 
-  let body: { conversationId?: string; text?: string };
+  let body: { conversationId?: string; text?: string; continue?: boolean };
   try {
     body = await req.json();
   } catch {
@@ -27,12 +27,15 @@ export async function POST(req: Request) {
   }
   const text = (body.text ?? "").trim();
   const conversationId = body.conversationId ?? "";
-  if (!text || !conversationId) return NextResponse.json({ error: "Missing text or conversation" }, { status: 400 });
+  const continueTurn = body.continue === true;
+  if (!conversationId || (!text && !continueTurn)) return NextResponse.json({ error: "Missing text or conversation" }, { status: 400 });
   if (text.length > 8000) return NextResponse.json({ error: "Message too long (8000 characters max)" }, { status: 400 });
 
-  const balance = await getBalance(user.id);
-  if (balance < env.turnReserveMicros()) {
-    return NextResponse.json({ error: "out_of_credits", balanceMicros: balance }, { status: 402 });
+  if (env.billingEnabled()) {
+    const balance = await getBalance(user.id);
+    if (balance < env.turnReserveMicros()) {
+      return NextResponse.json({ error: "out_of_credits", balanceMicros: balance }, { status: 402 });
+    }
   }
 
   const encoder = new TextEncoder();
@@ -56,7 +59,7 @@ export async function POST(req: Request) {
           }
         }
       }, 15_000);
-      runTurn({ supabase, userId: user.id, conversationId, userText: text, emit })
+      runTurn({ supabase, userId: user.id, conversationId, userText: continueTurn ? null : text, continueTurn, emit })
         .catch((err) => emit({ type: "error", message: (err as Error).message }))
         .finally(() => {
           clearInterval(keepAlive);
